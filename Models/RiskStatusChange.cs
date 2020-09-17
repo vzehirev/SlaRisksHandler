@@ -9,7 +9,7 @@ namespace XlProcessor.Models
         public int Id { get; set; }
 
         [Required]
-        public string RiskRecordVLookupName { get; set; }
+        public int RiskRecordId { get; set; }
         public RiskRecord RiskRecord { get; set; }
 
         public string OldStatus { get; set; }

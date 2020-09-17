@@ -9,6 +9,9 @@ namespace XlProcessor.Models
     class RiskRecord
     {
         [Required, Key]
+        public int Id { get; set; }
+
+        [Required]
         [ExcelColumn("Vlookup Name")]
         public string VLookupName { get; set; }
 
@@ -18,7 +21,7 @@ namespace XlProcessor.Models
         [ExcelColumn("Last Status Change")]
         public DateTime? LastStatusChange { get; set; }
 
-        public TimeSpan? TotalHoldTime { get; set; }
+        public double TotalHoldHours { get; set; }
 
         public ICollection<RiskStatusChange> StatusChanges { get; set; } = new HashSet<RiskStatusChange>();
     }

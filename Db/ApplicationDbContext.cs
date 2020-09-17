@@ -8,9 +8,10 @@ namespace XlProcessor.Db
     {
         private readonly string connectionString;
 
-        public ApplicationDbContext(string connectionString)
+        public ApplicationDbContext()
         {
-            this.connectionString = connectionString;
+            var config = Config.Get();
+            this.connectionString = config["ConnectionString"];
         }
 
         public DbSet<RiskRecord> RiskRecords { get; set; }

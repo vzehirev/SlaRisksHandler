@@ -21,8 +21,10 @@ namespace XlProcessor.Db.Migrations
 
             modelBuilder.Entity("XlProcessor.Models.RiskRecord", b =>
                 {
-                    b.Property<string>("VLookupName")
-                        .HasColumnType("nvarchar(450)");
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasAnnotation("SqlServer:ValueGenerationStrategy", SqlServerValueGenerationStrategy.IdentityColumn);
 
                     b.Property<string>("DxcStatus")
                         .HasColumnType("nvarchar(max)");
@@ -30,10 +32,14 @@ namespace XlProcessor.Db.Migrations
                     b.Property<DateTime?>("LastStatusChange")
                         .HasColumnType("datetime2");
 
-                    b.Property<TimeSpan?>("TotalHoldTime")
-                        .HasColumnType("time");
+                    b.Property<double>("TotalHoldHours")
+                        .HasColumnType("float");
 
-                    b.HasKey("VLookupName");
+                    b.Property<string>("VLookupName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Id");
 
                     b.ToTable("RiskRecords");
                 });
@@ -55,13 +61,12 @@ namespace XlProcessor.Db.Migrations
                     b.Property<string>("OldStatus")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("RiskRecordVLookupName")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(450)");
+                    b.Property<int>("RiskRecordId")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("RiskRecordVLookupName");
+                    b.HasIndex("RiskRecordId");
 
                     b.ToTable("StatusChanges");
                 });
@@ -70,7 +75,7 @@ namespace XlProcessor.Db.Migrations
                 {
                     b.HasOne("XlProcessor.Models.RiskRecord", "RiskRecord")
                         .WithMany("StatusChanges")
-                        .HasForeignKey("RiskRecordVLookupName")
+                        .HasForeignKey("RiskRecordId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

@@ -14,69 +14,87 @@ namespace XlProcessor
     {
         static void Main()
         {
-            var config = new ConfigurationBuilder()
-                .SetBasePath(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location))
-                .AddJsonFile("appSettings.json", true, true).Build();
-
-            var originalFile = $"{config["FileFolder"]}{config["FileName"]}";
-            var copiedFile = $@"{config["FileFolder"]}temp-{config["FileName"]}";
-
-            File.Copy(originalFile, copiedFile, true);
-
-            var excelClient = new ExcelQueryFactory(copiedFile);
-
-            var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data")
-                .Where(x => x.VLookupName != "")
-                .ToDictionary(x => x.VLookupName);
-
-            using (var dbContext = new ApplicationDbContext(config["ConnectionString"]))
+            try
             {
-                if (dbContext.Database.GetPendingMigrations().Count() > 0)
+                var config = Config.Get();
+
+                var originalFile = config["FileFolder"] + config["FileName"];
+
+                if (IsFileLocked(new FileInfo(originalFile)))
                 {
-                    dbContext.Database.Migrate();
+                    return;
                 }
 
-                var dbRecords = dbContext.RiskRecords.ToDictionary(x => x.VLookupName);
+                var copiedFile = config["FileFolder"] + "temp-" + config["FileName"];
 
-                foreach (var fileRecord in fileRecords)
+                File.Copy(originalFile, copiedFile, true);
+
+                var excelClient = new ExcelQueryFactory(copiedFile);
+
+                var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data")
+                    .Where(x => x.VLookupName != "")
+                    .ToDictionary(x => x.VLookupName);
+
+                using (var dbContext = new ApplicationDbContext())
                 {
-                    var vLookupName = fileRecord.Key;
-
-                    if (!dbRecords.ContainsKey(vLookupName))
+                    if (dbContext.Database.GetPendingMigrations().Count() > 0)
                     {
-                        dbContext.RiskRecords.Add(fileRecord.Value);
+                        dbContext.Database.Migrate();
                     }
-                    else if (fileRecord.Value.DxcStatus != dbRecords[vLookupName].DxcStatus)
+
+                    var dbRecords = dbContext.RiskRecords.ToDictionary(x => x.VLookupName);
+
+                    foreach (var fileRecord in fileRecords)
                     {
-                        var statusChange = new RiskStatusChange
+                        var vLookupName = fileRecord.Key;
+
+                        if (!dbRecords.ContainsKey(vLookupName))
                         {
-                            RiskRecordVLookupName = vLookupName,
-                            OldStatus = dbRecords[vLookupName].DxcStatus,
-                            NewStatus = fileRecord.Value.DxcStatus,
-                            ChangedAt = fileRecord.Value.LastStatusChange ?? DateTime.UtcNow,
-                        };
-
-                        dbContext.StatusChanges.Add(statusChange);
-
-                        dbRecords[vLookupName].DxcStatus = statusChange.NewStatus;
-
-                        if (statusChange.OldStatus == "On Hold")
-                        {
-                            var holdTime = statusChange.ChangedAt - dbRecords[vLookupName].LastStatusChange;
-
-                            if (dbRecords[vLookupName].TotalHoldTime == null)
-                            {
-                                dbRecords[vLookupName].TotalHoldTime = new TimeSpan();
-                            }
-                            dbRecords[vLookupName].TotalHoldTime += holdTime;
+                            dbContext.RiskRecords.Add(fileRecord.Value);
                         }
+                        else if (fileRecord.Value.DxcStatus != dbRecords[vLookupName].DxcStatus)
+                        {
+                            var statusChange = new RiskStatusChange
+                            {
+                                RiskRecordId = dbRecords[vLookupName].Id,
+                                OldStatus = dbRecords[vLookupName].DxcStatus,
+                                NewStatus = fileRecord.Value.DxcStatus,
+                                ChangedAt = fileRecord.Value.LastStatusChange ?? DateTime.UtcNow,
+                            };
 
-                        dbRecords[vLookupName].LastStatusChange = statusChange.ChangedAt;
+                            dbContext.StatusChanges.Add(statusChange);
 
-                        dbContext.RiskRecords.Update(dbRecords[vLookupName]);
+                            dbRecords[vLookupName].DxcStatus = statusChange.NewStatus;
+
+                            if (statusChange.OldStatus == config["OnHoldStatusValue"])
+                            {
+                                var holdTime = statusChange.ChangedAt - dbRecords[vLookupName].LastStatusChange;
+
+                                dbRecords[vLookupName].TotalHoldHours += holdTime.Value.TotalHours;
+                            }
+
+                            dbRecords[vLookupName].LastStatusChange = statusChange.ChangedAt;
+
+                            dbContext.RiskRecords.Update(dbRecords[vLookupName]);
+                        }
                     }
+                    dbContext.SaveChanges();
                 }
-                dbContext.SaveChanges();
+            }
+            catch (Exception ex)
+            {
+                var errorMessage = $"{DateTime.UtcNow} - {ex.Message}{Environment.NewLine}";
+                var filePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop) + "\\SlaRiskHandlerErrorLog.txt";
+                File.AppendAllText(filePath, errorMessage);
+            }
+        }
+
+        private static bool IsFileLocked(FileInfo file)
+        {
+            using (FileStream stream = file.OpenRead())
+            {
+                stream.Close();
+                return false;
             }
         }
     }

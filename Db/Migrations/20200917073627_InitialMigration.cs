@@ -11,14 +11,16 @@ namespace XlProcessor.Db.Migrations
                 name: "RiskRecords",
                 columns: table => new
                 {
+                    Id = table.Column<int>(nullable: false)
+                        .Annotation("SqlServer:Identity", "1, 1"),
                     VLookupName = table.Column<string>(nullable: false),
                     DxcStatus = table.Column<string>(nullable: true),
                     LastStatusChange = table.Column<DateTime>(nullable: true),
-                    TotalHoldTime = table.Column<TimeSpan>(nullable: true)
+                    TotalHoldHours = table.Column<double>(nullable: false)
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_RiskRecords", x => x.VLookupName);
+                    table.PrimaryKey("PK_RiskRecords", x => x.Id);
                 });
 
             migrationBuilder.CreateTable(
@@ -27,7 +29,7 @@ namespace XlProcessor.Db.Migrations
                 {
                     Id = table.Column<int>(nullable: false)
                         .Annotation("SqlServer:Identity", "1, 1"),
-                    RiskRecordVLookupName = table.Column<string>(nullable: false),
+                    RiskRecordId = table.Column<int>(nullable: false),
                     OldStatus = table.Column<string>(nullable: true),
                     NewStatus = table.Column<string>(nullable: false),
                     ChangedAt = table.Column<DateTime>(nullable: false)
@@ -36,17 +38,17 @@ namespace XlProcessor.Db.Migrations
                 {
                     table.PrimaryKey("PK_StatusChanges", x => x.Id);
                     table.ForeignKey(
-                        name: "FK_StatusChanges_RiskRecords_RiskRecordVLookupName",
-                        column: x => x.RiskRecordVLookupName,
+                        name: "FK_StatusChanges_RiskRecords_RiskRecordId",
+                        column: x => x.RiskRecordId,
                         principalTable: "RiskRecords",
-                        principalColumn: "VLookupName",
+                        principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_StatusChanges_RiskRecordVLookupName",
+                name: "IX_StatusChanges_RiskRecordId",
                 table: "StatusChanges",
-                column: "RiskRecordVLookupName");
+                column: "RiskRecordId");
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
