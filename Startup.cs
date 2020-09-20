@@ -5,8 +5,8 @@ using Microsoft.EntityFrameworkCore;
 using XlProcessor.Models;
 using XlProcessor.Db;
 using System;
-using Microsoft.Extensions.Configuration;
 using System.Reflection;
+using System.Diagnostics;
 
 namespace XlProcessor
 {
@@ -70,7 +70,7 @@ namespace XlProcessor
                             {
                                 var holdTime = statusChange.ChangedAt - dbRecords[vLookupName].LastStatusChange;
 
-                                dbRecords[vLookupName].TotalHoldHours += holdTime.Value.TotalHours;
+                                dbRecords[vLookupName].TotalHoldHours += Math.Ceiling(holdTime.Value.TotalHours);
                             }
 
                             dbRecords[vLookupName].LastStatusChange = statusChange.ChangedAt;
@@ -84,7 +84,7 @@ namespace XlProcessor
             catch (Exception ex)
             {
                 var errorMessage = $"{DateTime.UtcNow} - {ex.Message}{Environment.NewLine}";
-                var filePath = Environment.GetFolderPath(Environment.SpecialFolder.Desktop) + "\\SlaRiskHandlerErrorLog.txt";
+                var filePath = Environment.CurrentDirectory + "\\SlaRiskHandlerErrorLog.txt";
                 File.AppendAllText(filePath, errorMessage);
             }
         }

@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.Configuration;
+using System;
 using System.IO;
 using System.Reflection;
 
@@ -9,7 +10,7 @@ namespace XlProcessor
         public static IConfigurationRoot Get()
         {
             return new ConfigurationBuilder()
-                .SetBasePath(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location))
+                .SetBasePath(Environment.CurrentDirectory)
                 .AddJsonFile("appSettings.json", true, true).Build();
         }
     }
