@@ -7,6 +7,7 @@ namespace XlProcessor
 {
     static class Config
     {
+        // Get appSettings.json config file
         public static IConfigurationRoot Get()
         {
             return new ConfigurationBuilder()
