@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore;
 using XlProcessor.Models;
 using XlProcessor.Db;
 using System;
+using System.Data.OleDb;
+using System.Data;
+using System.Collections.Generic;
 
 namespace XlProcessor
 {
@@ -12,88 +15,102 @@ namespace XlProcessor
     {
         static void Main()
         {
-            try
+            //try
+            //{
+            var config = Config.Get();
+
+            var file = config["FileFolder"] + config["FileName"];
+
+            // If the file is being opened and/or edited by another program - return
+            if (IsFileLocked(new FileInfo(file)))
             {
-                var config = Config.Get();
+                return;
+            }
 
-                var originalFile = config["FileFolder"] + config["FileName"];
+            // Create backup
+            File.Copy(file, $"{config["FileFolder"]}{DateTime.UtcNow:dd-MMM-yy-HH-mm}-{config["FileName"]}");
 
-                // If the file is being opened and/or edited by another program - return
-                if (IsFileLocked(new FileInfo(originalFile)))
+            var excelClient = new ExcelQueryFactory(file);
+
+            // Load all the records from the file in memory as a dictionary
+            var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data")
+                .Where(x => x.VLookupName != "")
+                .ToDictionary(x => x.VLookupName);
+
+            using (var dbContext = new ApplicationDbContext())
+            {
+                // If there're pending migrations - apply them
+                if (dbContext.Database.GetPendingMigrations().Count() > 0)
                 {
-                    return;
+                    dbContext.Database.Migrate();
                 }
 
-                var copiedFile = config["FileFolder"] + "temp-" + config["FileName"];
+                // Load all the records from db in memory as dictionary
+                var dbRecords = dbContext.RiskRecords.ToDictionary(x => x.VLookupName);
 
-                // Copy the file, so the app can work with an independent instance of the file
-                File.Copy(originalFile, copiedFile, true);
+                // Dictionary containing VLookupName and TotalHoldHours for records with updated TotalHoldHours info
+                // Used for updating the sheets file
+                var fileChangesToBeMade = new Dictionary<string, double>();
 
-                var excelClient = new ExcelQueryFactory(copiedFile);
-
-                // Load all the records from the file in memory as a dictionary
-                var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data")
-                    .Where(x => x.VLookupName != "")
-                    .ToDictionary(x => x.VLookupName);
-
-                using (var dbContext = new ApplicationDbContext())
+                // VLookupName is considered unique, if the value doesn't exist in the db - add it,
+                // if it exist and is with different status, change its status and create a new status change record in db
+                foreach (var fileRecord in fileRecords)
                 {
-                    // If there're pending migrations - apply them
-                    if (dbContext.Database.GetPendingMigrations().Count() > 0)
+                    if (!dbRecords.ContainsKey(fileRecord.Key))
                     {
-                        dbContext.Database.Migrate();
+                        dbContext.RiskRecords.Add(fileRecord.Value);
                     }
-
-                    // Load all the records from db in memory as dictionary
-                    var dbRecords = dbContext.RiskRecords.ToDictionary(x => x.VLookupName);
-
-                    // VLookupName is considered unique, if the value doesn't exist in the db - add it,
-                    // if it exist and is with different status, change its status and create a new status change record in db
-                    foreach (var fileRecord in fileRecords)
+                    else if (fileRecord.Value.DxcStatus != dbRecords[fileRecord.Key].DxcStatus)
                     {
-                        var vLookupName = fileRecord.Key;
-
-                        if (!dbRecords.ContainsKey(vLookupName))
+                        var statusChange = new RiskStatusChange
                         {
-                            dbContext.RiskRecords.Add(fileRecord.Value);
-                        }
-                        else if (fileRecord.Value.DxcStatus != dbRecords[vLookupName].DxcStatus)
+                            RiskRecordId = dbRecords[fileRecord.Key].Id,
+                            OldStatus = dbRecords[fileRecord.Key].DxcStatus,
+                            NewStatus = fileRecord.Value.DxcStatus,
+                            ChangedAt = fileRecord.Value.LastStatusChange ?? DateTime.UtcNow,
+                        };
+
+                        dbContext.StatusChanges.Add(statusChange);
+
+                        dbRecords[fileRecord.Key].DxcStatus = statusChange.NewStatus;
+
+                        // If there's a status change and old status was On Hold add the hold duration to
+                        // the TotalHoldHours
+                        if (statusChange.OldStatus.ToLower().Contains("hold"))
                         {
-                            var statusChange = new RiskStatusChange
+                            var holdTime = statusChange.ChangedAt - dbRecords[fileRecord.Key].LastStatusChange;
+
+                            // 30 mins = 1 hr hold time, 1 hr 30 mins = 2 hr hold time
+                            if (holdTime.Value.TotalHours % 1 >= 0.5)
                             {
-                                RiskRecordId = dbRecords[vLookupName].Id,
-                                OldStatus = dbRecords[vLookupName].DxcStatus,
-                                NewStatus = fileRecord.Value.DxcStatus,
-                                ChangedAt = fileRecord.Value.LastStatusChange ?? DateTime.UtcNow,
-                            };
-
-                            dbContext.StatusChanges.Add(statusChange);
-
-                            dbRecords[vLookupName].DxcStatus = statusChange.NewStatus;
-
-                            // If there's a status change and old status was On Hold add the hold duration to
-                            // the the TotalHoldHours (smallest step is 1 hr, so using only whole numbers)
-                            if (statusChange.OldStatus.ToLower().Contains("hold"))
+                                dbRecords[fileRecord.Key].TotalHoldHours += Math.Ceiling(holdTime.Value.TotalHours);
+                            }
+                            // 29 mins = 0 hrs hold time, 1 hr 29 mins = 1 hr hold time
+                            else
                             {
-                                var holdTime = statusChange.ChangedAt - dbRecords[vLookupName].LastStatusChange;
-
-                                dbRecords[vLookupName].TotalHoldHours += Math.Ceiling(holdTime.Value.TotalHours);
+                                dbRecords[fileRecord.Key].TotalHoldHours += Math.Floor(holdTime.Value.TotalHours);
                             }
 
-                            dbRecords[vLookupName].LastStatusChange = statusChange.ChangedAt;
-
-                            dbContext.RiskRecords.Update(dbRecords[vLookupName]);
+                            fileChangesToBeMade.Add(dbRecords[fileRecord.Key].VLookupName, dbRecords[fileRecord.Key].TotalHoldHours);
                         }
+
+                        dbRecords[fileRecord.Key].LastStatusChange = statusChange.ChangedAt;
+
+                        dbContext.RiskRecords.Update(dbRecords[fileRecord.Key]);
                     }
-                    dbContext.SaveChanges();
                 }
+                dbContext.SaveChanges();
+
+                // After data is saved in DB try updating the sheets file
+                UpdateTotalHoldHoursInExcel(fileChangesToBeMade, file);
             }
-            catch (Exception ex)
-            {
-                var errorMessage = $"{DateTime.UtcNow} - {ex.Message}{Environment.NewLine}";
-                var filePath = Environment.CurrentDirectory + "\\SlaRiskHandlerErrorLog.txt";
-                File.AppendAllText(filePath, errorMessage);
-            }
+            //}
+            //catch (Exception ex)
+            //{
+            //    var errorMessage = $"{DateTime.UtcNow} - {ex.Message}{Environment.NewLine}";
+            //    var filePath = Environment.CurrentDirectory + "\\SlaRiskHandlerErrorLog.txt";
+            //    File.AppendAllText(filePath, errorMessage);
+            //}
         }
 
         private static bool IsFileLocked(FileInfo file)
@@ -102,6 +119,25 @@ namespace XlProcessor
             {
                 stream.Close();
                 return false;
+            }
+        }
+
+        private static void UpdateTotalHoldHoursInExcel(Dictionary<string, double> changes, string file)
+        {
+
+            var oleDbConnStr = $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={file};Extended Properties=\"Excel 12.0;HDR = YES\";";
+
+            using (var conn = new OleDbConnection(oleDbConnStr))
+            {
+                conn.Open();
+                var cmd = new OleDbCommand();
+                cmd.Connection = conn;
+
+                foreach (var record in changes)
+                {
+                    cmd.CommandText = $"UPDATE [Raw Data$] SET [Total Hold Hours] = {record.Value} WHERE [Vlookup Name] = '{record.Key}';";
+                    cmd.ExecuteNonQuery();
+                }
             }
         }
     }
