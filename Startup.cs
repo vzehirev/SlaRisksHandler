@@ -5,7 +5,6 @@ using Microsoft.EntityFrameworkCore;
 using XlProcessor.Models;
 using XlProcessor.Db;
 using System;
-using System.Data.OleDb;
 using System.Data;
 using System.Collections.Generic;
 
@@ -17,25 +16,23 @@ namespace XlProcessor
         {
             try
             {
-                var config = Config.Get();
+                var config = Funcs.GetConfig();
 
                 var file = config["FileFolder"] + config["FileName"];
 
                 // If the file is being opened and/or edited by another program - stop
-                if (IsFileLocked(new FileInfo(file)))
+                if (Funcs.IsFileLocked(new FileInfo(file)))
                 {
                     return;
                 }
 
                 // Create backup
-                File.Copy(file, $"{config["FileFolder"]}{DateTime.UtcNow:dd-MMM-yy-HH-mm}-{config["FileName"]}");
+                File.Copy(file, $"{config["FileFolder"]}{DateTime.UtcNow:dd-MMM-yy-HH-mm-ss}-{config["FileName"]}");
 
                 var excelClient = new ExcelQueryFactory(file);
 
                 // Load all the records from the file in memory as a dictionary (VLookupName as key)
-                var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data")
-                    .Where(x => x.VLookupName != "")
-                    .ToDictionary(x => x.VLookupName);
+                var fileRecords = excelClient.Worksheet<RiskRecord>("Raw Data").Where(x => x.VLookupName != "");
 
                 using (var dbContext = new ApplicationDbContext())
                 {
@@ -56,54 +53,55 @@ namespace XlProcessor
                     // if it exist and is with different status, change its status and create a new status change record in db
                     foreach (var fileRecord in fileRecords)
                     {
-                        if (!dbRecords.ContainsKey(fileRecord.Key))
+                        if (!dbRecords.ContainsKey(fileRecord.VLookupName))
                         {
-                            dbContext.RiskRecords.Add(fileRecord.Value);
+                            dbContext.RiskRecords.Add(fileRecord);
                         }
-                        else if (fileRecord.Value.DxcStatus != dbRecords[fileRecord.Key].DxcStatus)
+                        else if (fileRecord.DxcStatus != dbRecords[fileRecord.VLookupName].DxcStatus)
                         {
                             var statusChange = new RiskStatusChange
                             {
-                                RiskRecordId = dbRecords[fileRecord.Key].Id,
-                                OldStatus = dbRecords[fileRecord.Key].DxcStatus,
-                                NewStatus = fileRecord.Value.DxcStatus,
-                                ChangedAt = fileRecord.Value.LastStatusChange ?? DateTime.UtcNow,
+                                RiskRecordId = dbRecords[fileRecord.VLookupName].Id,
+                                OldStatus = dbRecords[fileRecord.VLookupName].DxcStatus,
+                                NewStatus = fileRecord.DxcStatus,
+                                ChangedAt = fileRecord.LastStatusChange ?? DateTime.UtcNow,
                             };
 
                             dbContext.StatusChanges.Add(statusChange);
 
-                            dbRecords[fileRecord.Key].DxcStatus = statusChange.NewStatus;
+                            dbRecords[fileRecord.VLookupName].DxcStatus = statusChange.NewStatus;
 
-                            // If there's a status change and old status was On Hold add the hold duration to
-                            // the TotalHoldHours
-                            if (statusChange.OldStatus.ToLower().Contains("hold"))
+                            // If there's a status change, old status was On Hold and we have LastStatusChange
+                            // calculate and add the hold duration to the TotalHoldHours
+                            if (statusChange.OldStatus.ToLower().Contains("hold")
+                                && dbRecords[fileRecord.VLookupName].LastStatusChange != null)
                             {
-                                var holdTime = statusChange.ChangedAt - dbRecords[fileRecord.Key].LastStatusChange;
-
-                                // 30 mins = 1 hr hold time, 1 hr 30 mins = 2 hr hold time
-                                if (holdTime.Value.TotalHours % 1 >= 0.5)
-                                {
-                                    dbRecords[fileRecord.Key].TotalHoldHours += Math.Ceiling(holdTime.Value.TotalHours);
-                                }
-                                // 29 mins = 0 hrs hold time, 1 hr 29 mins = 1 hr hold time
-                                else
-                                {
-                                    dbRecords[fileRecord.Key].TotalHoldHours += Math.Floor(holdTime.Value.TotalHours);
-                                }
+                                Funcs.UpdateRecordHoldHours(dbRecords[fileRecord.VLookupName], statusChange.ChangedAt);
 
                                 // Add the new hold hours value in the dictionary (VLookupName is key, TotalHoldHours is value)
-                                fileChangesToBeMade.Add(dbRecords[fileRecord.Key].VLookupName, dbRecords[fileRecord.Key].TotalHoldHours);
+                                fileChangesToBeMade.Add(dbRecords[fileRecord.VLookupName].VLookupName, dbRecords[fileRecord.VLookupName].TotalHoldHours);
                             }
 
-                            dbRecords[fileRecord.Key].LastStatusChange = statusChange.ChangedAt;
+                            dbRecords[fileRecord.VLookupName].LastStatusChange = statusChange.ChangedAt;
 
-                            dbContext.RiskRecords.Update(dbRecords[fileRecord.Key]);
+                            dbContext.RiskRecords.Update(dbRecords[fileRecord.VLookupName]);
+                        }
+
+                        // If record is on hold and we have from when (LastStatusChange) - update what is its hold time until now
+                        if (dbRecords.ContainsKey(fileRecord.VLookupName)
+                            && dbRecords[fileRecord.VLookupName].DxcStatus.ToLower().Contains("hold")
+                            && (dbRecords[fileRecord.VLookupName].LastTotalHoldHoursUpdate != null || dbRecords[fileRecord.VLookupName].LastStatusChange != null))
+                        {
+                            Funcs.UpdateRecordHoldHours(dbRecords[fileRecord.VLookupName]);
+                            dbContext.RiskRecords.Update(dbRecords[fileRecord.VLookupName]);
+
+                            fileChangesToBeMade.Add(dbRecords[fileRecord.VLookupName].VLookupName, dbRecords[fileRecord.VLookupName].TotalHoldHours);
                         }
                     }
                     dbContext.SaveChanges();
 
                     // After data is saved in DB - update the sheets file with the populated dictionary
-                    UpdateTotalHoldHoursInExcel(fileChangesToBeMade, file);
+                    Funcs.UpdateTotalHoldHoursInSheet(fileChangesToBeMade, file);
                 }
             }
             catch (Exception ex)
@@ -111,34 +109,6 @@ namespace XlProcessor
                 var errorMessage = $"{DateTime.UtcNow} - {ex.Message}{Environment.NewLine}";
                 var filePath = Environment.CurrentDirectory + "\\SlaRiskHandlerErrorLog.txt";
                 File.AppendAllText(filePath, errorMessage);
-            }
-        }
-
-        private static bool IsFileLocked(FileInfo file)
-        {
-            using (FileStream stream = file.OpenRead())
-            {
-                stream.Close();
-                return false;
-            }
-        }
-
-        private static void UpdateTotalHoldHoursInExcel(Dictionary<string, double> changes, string file)
-        {
-
-            var oleDbConnStr = $"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={file};Extended Properties=\"Excel 12.0;HDR = YES\";";
-
-            using (var conn = new OleDbConnection(oleDbConnStr))
-            {
-                conn.Open();
-                var cmd = new OleDbCommand();
-                cmd.Connection = conn;
-
-                foreach (var record in changes)
-                {
-                    cmd.CommandText = $"UPDATE [Raw Data$] SET [Total Hold Hours] = {record.Value} WHERE [Vlookup Name] = '{record.Key}';";
-                    cmd.ExecuteNonQuery();
-                }
             }
         }
     }

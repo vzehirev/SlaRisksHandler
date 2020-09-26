@@ -10,7 +10,7 @@ namespace XlProcessor.Db
 
         public ApplicationDbContext()
         {
-            var config = Config.Get();
+            var config = Funcs.GetConfig();
             this.connectionString = config["ConnectionString"];
         }
 

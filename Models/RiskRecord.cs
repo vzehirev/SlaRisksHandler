@@ -23,6 +23,8 @@ namespace XlProcessor.Models
         [ExcelColumn("Total Hold Hours")]
         public double TotalHoldHours { get; set; }
 
+        public DateTime? LastTotalHoldHoursUpdate { get; set; }
+
         public ICollection<RiskStatusChange> StatusChanges { get; set; } = new HashSet<RiskStatusChange>();
     }
 }
