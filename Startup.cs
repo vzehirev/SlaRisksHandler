@@ -86,6 +86,11 @@ namespace XlProcessor
 
                             dbContext.RiskRecords.Update(dbRecords[fileRecord.VLookupName]);
                         }
+                        // If LastStatusChange was updated manually in the sheet
+                        else if (dbRecords[fileRecord.VLookupName].LastStatusChange == null && fileRecord.LastStatusChange != null)
+                        {
+                            dbRecords[fileRecord.VLookupName].LastStatusChange = fileRecord.LastStatusChange;
+                        }
 
                         // If record is on hold and we have from when (LastStatusChange) - update what is its hold time until now
                         if (dbRecords.ContainsKey(fileRecord.VLookupName)
